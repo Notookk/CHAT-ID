@@ -1,15 +1,18 @@
+#OWNER_ID = 7875192045
 # main.py
 
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import GetParticipantsRequest
 from telethon.tl.types import ChannelParticipantsSearch
+from telethon.tl.types import User, ChannelParticipant
 from config import API_ID, API_HASH, PHONE_NUMBER
 import asyncio
 import logging
-from datetime import datetime
 import os
 import getpass
+from datetime import datetime, timedelta
 OWNER_ID = 7875192045
+# Setup logging
 if not os.path.exists('logs'):
     os.makedirs('logs')
 
@@ -37,11 +40,17 @@ async def main():
     )
     logger.info("Bot started successfully")
 
-def is_inactive_user(user):
-    """Check if user is deleted or inactive"""
-    if user.deleted:
+def should_skip_user(user):
+    """Determine if user should be skipped"""
+    if not isinstance(user, User):
         return True
-    if isinstance(user.status, (UserStatusEmpty, UserStatusLastMonth, UserStatusLastWeek)):
+    if getattr(user, 'deleted', False):
+        return True
+    if getattr(user, 'bot', False):
+        return True
+    if not hasattr(user, 'status'):
+        return True
+    if user.status is None:
         return True
     return False
 
@@ -70,6 +79,8 @@ async def tag_all(event):
 
     tagging_active = True
     status_msg = await event.reply("🔄 Starting smart tagging (skipping bots/deleted/inactive)...")
+    tagged_count = 0
+    skipped_count = 0
 
     try:
         # Get participants in batches
@@ -92,15 +103,8 @@ async def tag_all(event):
                 if not tagging_active:
                     break
 
-                # Skip conditions
-                if user.bot:
-                    logger.info(f"Skipping bot: {user.id}")
-                    continue
-                if is_inactive_user(user):
-                    logger.info(f"Skipping inactive/deleted: {user.id}")
-                    continue
-                if getattr(user, 'admin', False):
-                    logger.info(f"Skipping admin: {user.id}")
+                if should_skip_user(user):
+                    skipped_count += 1
                     continue
 
                 # Create mention
@@ -111,19 +115,21 @@ async def tag_all(event):
 
                 try:
                     await event.respond(f"{mention} {message}")
+                    tagged_count += 1
                     logger.info(f"Tagged active user: {user.id}")
                 except Exception as e:
                     logger.error(f"Failed to tag {user.id}: {str(e)}")
+                    skipped_count += 1
 
                 # 2-second delay between tags
                 await asyncio.sleep(2)
 
             offset += len(participants.users)
 
-        if tagging_active:
-            await status_msg.edit("✅ Smart tagging completed!")
-        else:
-            await status_msg.edit("⏹ Tagging stopped by owner")
+        completion_msg = (f"✅ Tagging completed!\n"
+                         f"• Tagged: {tagged_count}\n"
+                         f"• Skipped: {skipped_count}")
+        await status_msg.edit(completion_msg)
 
     except Exception as e:
         logger.error(f"Tagging error: {str(e)}")

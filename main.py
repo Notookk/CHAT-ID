@@ -10,11 +10,9 @@ from datetime import datetime
 import os
 import getpass
 OWNER_ID = 7875192045
-# Ensure logs directory exists
 if not os.path.exists('logs'):
     os.makedirs('logs')
 
-# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -25,114 +23,133 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize the Telegram client
+# Initialize client
 client = TelegramClient('session_name', API_ID, API_HASH)
 
 # Global variables
 tagging_active = False
-skip_bots = True  # Set to False if you want to tag bots
-skip_admins = False  # Set to True if you want to skip admins
-skip_users = []  # Add user IDs or usernames to skip (e.g., [123456789, 'username'])
 
 async def main():
-    # Start the client
     await client.start(
         phone=PHONE_NUMBER,
-        code_callback=lambda: input('Enter the OTP sent to your Telegram app: '),
-        password=lambda: getpass.getpass('Enter your Two-Step Verification password: ')
+        code_callback=lambda: input('Enter Telegram OTP: '),
+        password=lambda: getpass.getpass('Enter 2FA password: ')
     )
-    logger.info("Client created and connected!")
+    logger.info("Bot started successfully")
 
-@client.on(events.NewMessage(pattern='/utag'))
+def is_inactive_user(user):
+    """Check if user is deleted or inactive"""
+    if user.deleted:
+        return True
+    if isinstance(user.status, (UserStatusEmpty, UserStatusLastMonth, UserStatusLastWeek)):
+        return True
+    return False
+
+@client.on(events.NewMessage(pattern='/idtag'))
 async def tag_all(event):
     global tagging_active
 
-    # Check if the command is used by the owner
+    # Owner verification
     if event.sender_id != OWNER_ID:
-        await event.reply("You are not authorized to use this command.")
+        await event.delete()
+        reply = await event.reply("⚠️ Owner only command!")
+        await asyncio.sleep(3)
+        await reply.delete()
         return
 
-    # Check if the command is used in a group
+    # Group check
     if not event.is_group:
-        await event.reply("This command can only be used in a group.")
+        await event.reply("❌ Command works in groups only!")
         return
 
-    # Extract the message to tag with
+    # Extract message
     message = event.message.message[len('/idtag '):].strip()
     if not message:
-        await event.reply("Please provide a message to tag with. Example: `/idtag GOOD MORNING`")
+        await event.reply("ℹ️ Usage: /idtag [your message]")
         return
 
-    # Start tagging process
     tagging_active = True
-    await event.reply("Starting tagging process...")
+    status_msg = await event.reply("🔄 Starting smart tagging (skipping bots/deleted/inactive)...")
 
-    # Get all participants in the group
-    offset = 0
-    limit = 100
-    all_participants = []
-    while True:
-        participants = await client(GetParticipantsRequest(
-            event.chat_id, ChannelParticipantsSearch(''), offset, limit, hash=0
-        ))
-        if not participants.users:
-            break
-        all_participants.extend(participants.users)
-        offset += len(participants.users)
+    try:
+        # Get participants in batches
+        offset = 0
+        limit = 200
+        while tagging_active:
+            participants = await client(GetParticipantsRequest(
+                event.chat_id, 
+                ChannelParticipantsSearch(''), 
+                offset, 
+                limit, 
+                hash=0
+            ))
+            
+            if not participants.users:
+                break
 
-    # Tag each participant
-    for user in all_participants:
-        if not tagging_active:
-            break  # Stop tagging if canceled
+            # Process current batch
+            for user in participants.users:
+                if not tagging_active:
+                    break
 
-        # Skip bots if enabled
-        if skip_bots and user.bot:
-            logger.info(f"Skipping bot: {user.username or user.first_name}")
-            continue
+                # Skip conditions
+                if user.bot:
+                    logger.info(f"Skipping bot: {user.id}")
+                    continue
+                if is_inactive_user(user):
+                    logger.info(f"Skipping inactive/deleted: {user.id}")
+                    continue
+                if getattr(user, 'admin', False):
+                    logger.info(f"Skipping admin: {user.id}")
+                    continue
 
-        # Skip admins if enabled
-        if skip_admins and getattr(user, 'admin', False):
-            logger.info(f"Skipping admin: {user.username or user.first_name}")
-            continue
+                # Create mention
+                if user.username:
+                    mention = f"@{user.username}"
+                else:
+                    mention = f"[{user.first_name or 'User'}](tg://user?id={user.id})"
 
-        # Skip specific users
-        if user.id in skip_users or (user.username and user.username in skip_users):
-            logger.info(f"Skipping user: {user.username or user.first_name}")
-            continue
+                try:
+                    await event.respond(f"{mention} {message}")
+                    logger.info(f"Tagged active user: {user.id}")
+                except Exception as e:
+                    logger.error(f"Failed to tag {user.id}: {str(e)}")
 
-        # Tag the user
-        if user.username:
-            tag = f"@{user.username}"
+                # 2-second delay between tags
+                await asyncio.sleep(2)
+
+            offset += len(participants.users)
+
+        if tagging_active:
+            await status_msg.edit("✅ Smart tagging completed!")
         else:
-            tag = f"[{user.first_name}](tg://user?id={user.id})"
+            await status_msg.edit("⏹ Tagging stopped by owner")
 
-        try:
-            await event.respond(f"{tag} {message}")
-            logger.info(f"Tagged: {user.username or user.first_name}")
-        except Exception as e:
-            logger.error(f"Failed to tag {user.username or user.first_name}: {e}")
+    except Exception as e:
+        logger.error(f"Tagging error: {str(e)}")
+        await status_msg.edit(f"❌ Error: {str(e)}")
+    finally:
+        tagging_active = False
 
-        # Add a 2-second delay to avoid rate limits
-        await asyncio.sleep(2)
-
-    if tagging_active:
-        await event.reply("Tagging process completed!")
-    else:
-        await event.reply("Tagging process canceled.")
-
-@client.on(events.NewMessage(pattern='/cancel'))
-async def cancel_tag(event):
+@client.on(events.NewMessage(pattern='/stoptag'))
+async def stop_tagging(event):
     global tagging_active
 
-    # Check if the command is used by the owner
+    # Owner verification
     if event.sender_id != OWNER_ID:
-        await event.reply("You are not authorized to use this command.")
+        await event.delete()
+        reply = await event.reply("⚠️ Only owner can stop tagging!")
+        await asyncio.sleep(3)
+        await reply.delete()
         return
 
-    tagging_active = False
-    await event.reply("Tagging process canceled.")
+    if tagging_active:
+        tagging_active = False
+        await event.reply("🛑 Stopped tagging process")
+    else:
+        await event.reply("ℹ️ No active tagging to stop")
 
-# Run the client
+# Run client
 with client:
     client.loop.run_until_complete(main())
     client.run_until_disconnected()

@@ -1,7 +1,8 @@
 # main.py
 
 from telethon import TelegramClient, events
-from telethon.tl.functions.channels import GetParticipants
+from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.channels import GetParticipantsRequest
 from telethon.tl.types import ChannelParticipantsSearch
 from config import API_ID, API_HASH, PHONE_NUMBER
 import asyncio
@@ -63,12 +64,20 @@ async def tag_all(event):
     await event.reply("Starting tagging process...")
 
     # Get all participants in the group
-    all_participants = await client(GetParticipants(
-        event.chat_id, ChannelParticipantsSearch(''), offset=0, limit=1000, hash=0
-    ))
+    offset = 0
+    limit = 100
+    all_participants = []
+    while True:
+        participants = await client(GetParticipantsRequest(
+            event.chat_id, ChannelParticipantsSearch(''), offset, limit, hash=0
+        ))
+        if not participants.users:
+            break
+        all_participants.extend(participants.users)
+        offset += len(participants.users)
 
     # Tag each participant
-    for user in all_participants.users:
+    for user in all_participants:
         if not tagging_active:
             break  # Stop tagging if canceled
 
@@ -78,7 +87,7 @@ async def tag_all(event):
             continue
 
         # Skip admins if enabled
-        if skip_admins and user.admin:
+        if skip_admins and getattr(user, 'admin', False):
             logger.info(f"Skipping admin: {user.username or user.first_name}")
             continue
 

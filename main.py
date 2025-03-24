@@ -1,16 +1,15 @@
 # main.py
 
 from telethon import TelegramClient, events
-from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.channels import GetParticipantsRequest
 from telethon.tl.types import ChannelParticipantsSearch
-from config import API_ID, API_HASH, PHONE_NUMBER
+from config import API_ID, API_HASH, PHONE_NUMBER, OWNER_ID
 import asyncio
 import logging
 from datetime import datetime
 import os
 import getpass
-
+OWNER_ID = 7875192045
 # Ensure logs directory exists
 if not os.path.exists('logs'):
     os.makedirs('logs')
@@ -48,15 +47,20 @@ async def main():
 async def tag_all(event):
     global tagging_active
 
+    # Check if the command is used by the owner
+    if event.sender_id != OWNER_ID:
+        await event.reply("You are not authorized to use this command.")
+        return
+
     # Check if the command is used in a group
     if not event.is_group:
         await event.reply("This command can only be used in a group.")
         return
 
     # Extract the message to tag with
-    message = event.message.message[len('/utag '):].strip()
+    message = event.message.message[len('/idtag '):].strip()
     if not message:
-        await event.reply("Please provide a message to tag with. Example: `/utag GOOD MORNING`")
+        await event.reply("Please provide a message to tag with. Example: `/idtag GOOD MORNING`")
         return
 
     # Start tagging process
@@ -116,9 +120,15 @@ async def tag_all(event):
     else:
         await event.reply("Tagging process canceled.")
 
-@client.on(events.NewMessage(pattern='/cancel_tag'))
+@client.on(events.NewMessage(pattern='/cancel'))
 async def cancel_tag(event):
     global tagging_active
+
+    # Check if the command is used by the owner
+    if event.sender_id != OWNER_ID:
+        await event.reply("You are not authorized to use this command.")
+        return
+
     tagging_active = False
     await event.reply("Tagging process canceled.")
 

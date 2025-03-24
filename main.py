@@ -3,7 +3,7 @@
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import GetParticipantsRequest
 from telethon.tl.types import ChannelParticipantsSearch
-from config import API_ID, API_HASH, PHONE_NUMBER, OWNER_ID
+from config import API_ID, API_HASH, PHONE_NUMBER
 import asyncio
 import logging
 from datetime import datetime

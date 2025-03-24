@@ -1,17 +1,16 @@
-#OWNER_ID = 7875192045
-# main.py
+# main.py (Updated with Rate Limit Handling)
 
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import GetParticipantsRequest
 from telethon.tl.types import ChannelParticipantsSearch
-from telethon.tl.types import User, ChannelParticipant
-from config import API_ID, API_HASH, PHONE_NUMBER
+from telethon.errors import FloodWaitError
+from config import API_ID, API_HASH, PHONE_NUMBER, OWNER_ID
 import asyncio
 import logging
 import os
 import getpass
-from datetime import datetime, timedelta
-OWNER_ID = 7875192045
+import time
+
 # Setup logging
 if not os.path.exists('logs'):
     os.makedirs('logs')
@@ -31,6 +30,7 @@ client = TelegramClient('session_name', API_ID, API_HASH)
 
 # Global variables
 tagging_active = False
+last_message_time = 0  # For rate limiting
 
 async def main():
     await client.start(
@@ -42,17 +42,47 @@ async def main():
 
 def should_skip_user(user):
     """Determine if user should be skipped"""
-    if not isinstance(user, User):
+    if not hasattr(user, 'id'):
         return True
     if getattr(user, 'deleted', False):
         return True
     if getattr(user, 'bot', False):
         return True
-    if not hasattr(user, 'status'):
-        return True
-    if user.status is None:
-        return True
     return False
+
+async def safe_send_message(event, user, message):
+    """Handle message sending with rate limits"""
+    global last_message_time
+    
+    # Minimum delay between messages (in seconds)
+    MIN_DELAY = 30  # Increased from 2 to 30 seconds
+    
+    # Calculate required delay
+    current_time = time.time()
+    elapsed = current_time - last_message_time
+    wait_time = max(0, MIN_DELAY - elapsed)
+    
+    if wait_time > 0:
+        logger.info(f"Waiting {wait_time:.1f}s to avoid rate limits")
+        await asyncio.sleep(wait_time)
+    
+    try:
+        if user.username:
+            mention = f"@{user.username}"
+        else:
+            mention = f"[{user.first_name or 'User'}](tg://user?id={user.id})"
+        
+        await event.respond(f"{mention} {message}")
+        last_message_time = time.time()
+        return True
+    except FloodWaitError as e:
+        wait = e.seconds
+        logger.warning(f"Flood wait required: {wait} seconds")
+        await asyncio.sleep(wait)
+        return await safe_send_message(event, user, message)
+    except Exception as e:
+        logger.error(f"Failed to tag {getattr(user, 'id', 'unknown')}: {str(e)}")
+        return False
 
 @client.on(events.NewMessage(pattern='/idtag'))
 async def tag_all(event):
@@ -78,14 +108,13 @@ async def tag_all(event):
         return
 
     tagging_active = True
-    status_msg = await event.reply("🔄 Starting smart tagging (skipping bots/deleted/inactive)...")
-    tagged_count = 0
-    skipped_count = 0
+    status_msg = await event.reply("🔄 Starting smart tagging with rate limit protection...")
+    stats = {'tagged': 0, 'skipped': 0, 'errors': 0}
 
     try:
         # Get participants in batches
         offset = 0
-        limit = 200
+        limit = 100  # Reduced batch size
         while tagging_active:
             participants = await client(GetParticipantsRequest(
                 event.chat_id, 
@@ -104,31 +133,30 @@ async def tag_all(event):
                     break
 
                 if should_skip_user(user):
-                    skipped_count += 1
+                    stats['skipped'] += 1
                     continue
 
-                # Create mention
-                if user.username:
-                    mention = f"@{user.username}"
+                success = await safe_send_message(event, user, message)
+                if success:
+                    stats['tagged'] += 1
                 else:
-                    mention = f"[{user.first_name or 'User'}](tg://user?id={user.id})"
-
-                try:
-                    await event.respond(f"{mention} {message}")
-                    tagged_count += 1
-                    logger.info(f"Tagged active user: {user.id}")
-                except Exception as e:
-                    logger.error(f"Failed to tag {user.id}: {str(e)}")
-                    skipped_count += 1
-
-                # 2-second delay between tags
-                await asyncio.sleep(2)
+                    stats['errors'] += 1
 
             offset += len(participants.users)
+            if offset % 300 == 0:  # Update status every 300 users
+                await status_msg.edit(
+                    f"🔄 Processing...\n"
+                    f"• Tagged: {stats['tagged']}\n"
+                    f"• Skipped: {stats['skipped']}\n"
+                    f"• Errors: {stats['errors']}"
+                )
 
-        completion_msg = (f"✅ Tagging completed!\n"
-                         f"• Tagged: {tagged_count}\n"
-                         f"• Skipped: {skipped_count}")
+        completion_msg = (
+            f"✅ Tagging completed!\n"
+            f"• Tagged: {stats['tagged']}\n"
+            f"• Skipped: {stats['skipped']}\n"
+            f"• Errors: {stats['errors']}"
+        )
         await status_msg.edit(completion_msg)
 
     except Exception as e:
